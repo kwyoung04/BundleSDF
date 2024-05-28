@@ -23,246 +23,7 @@ try:
 except:
   pass
 
-
-def run_gui(gui_dict, gui_lock):
-  print("GUI started")
-  with gui_lock:
-    gui = BundleSdfGui(img_height=200)
-    gui_dict['started'] = True
-
-  local_dict = {}
-
-  while dpg.is_dearpygui_running():
-    with gui_lock:
-      if gui_dict['join']:
-        break
-
-      for k in ['mesh','color','mask','ob_in_cam','id_str','K','n_keyframe','nerf_num_frames']:
-        if k in gui_dict:
-          local_dict[k] = gui_dict[k]
-          del gui_dict[k]
-
-    if 'nerf_num_frames' in local_dict:
-      gui.set_nerf_num_frames(local_dict['nerf_num_frames'])
-
-    if 'mesh' in local_dict:
-      logging.info(f"mesh V: {local_dict['mesh'].vertices.shape}")
-      gui.update_mesh(local_dict['mesh'])
-
-    if 'color' in local_dict:
-      gui.update_frame(rgb=local_dict['color'], mask=local_dict['mask'], ob_in_cam=local_dict['ob_in_cam'], id_str=local_dict['id_str'], K=local_dict['K'], n_keyframe=local_dict['n_keyframe'])
-
-    local_dict = {}
-
-    dpg.render_dearpygui_frame()
-    time.sleep(0.03)
-
-  dpg.destroy_context()
-
-
-
-def run_nerf(p_dict, kf_to_nerf_list, lock, cfg_nerf, translation, sc_factor, start_nerf_keyframes, use_gui, gui_lock, gui_dict, debug_dir):
-  vox_res = 0.01
-  nerf_num_frames = 0
-  cnt_nerf = -1
-  rgbs_all = []
-  depths_all = []
-  normal_maps_all = []
-  masks_all = []
-  occ_masks_all = []
-  prev_pcd_real_scale = None
-  tf_normalize = None
-  if translation is not None:
-    tf_normalize = np.eye(4)
-    tf_normalize[:3,3] = translation
-    tf1 = np.eye(4)
-    tf1[:3,:3] *= sc_factor
-    tf_normalize = tf1@tf_normalize
-    cfg_nerf['sc_factor'] = float(sc_factor)
-    cfg_nerf['translation'] = translation
-
-  with lock:
-    SPDLOG = p_dict['SPDLOG']
-
-  while 1:
-    with lock:
-      join = p_dict['join']
-
-    if join:
-      break
-
-    skip = False
-    with lock:
-      if cnt_nerf==-1 and len(kf_to_nerf_list)<start_nerf_keyframes:
-        skip = True
-        p_dict['running'] = False
-      else:
-        if len(kf_to_nerf_list)>0:
-          p_dict['running'] = True
-          frame_id = p_dict['frame_id']
-          cam_in_obs = p_dict['cam_in_obs'].copy()
-          rgbs = []
-          depths = []
-          normal_maps = []
-          masks = []
-          occ_masks = []
-          for f in kf_to_nerf_list:
-            rgbs.append(f['rgb'])
-            depths.append(f['depth'])
-            masks.append(f['mask'])
-            if f['normal_map'] is not None:
-              normal_maps.append(f['normal_map'])
-            if f['occ_mask'] is not None:
-              occ_masks.append(f['occ_mask'])
-          K = p_dict['K']
-          nerf_num_frames += len(rgbs)
-          p_dict['nerf_num_frames'] = nerf_num_frames
-          kf_to_nerf_list[:] = []
-          if use_gui:
-            with gui_lock:
-              gui_dict['nerf_num_frames'] = nerf_num_frames
-        else:
-          skip = True
-
-    if skip:
-      time.sleep(0.01)
-      continue
-
-    cnt_nerf += 1
-    rgbs_all += list(rgbs)
-    depths_all += list(depths)
-    masks_all += list(masks)
-    if normal_maps is not None:
-      normal_maps_all += list(normal_maps)
-    if occ_masks is not None:
-      occ_masks_all += list(occ_masks)
-
-    out_dir = f"{debug_dir}/{frame_id}/nerf"
-    logging.info(f"out_dir: {out_dir}")
-    os.makedirs(out_dir, exist_ok=True)
-    os.system(f"rm -rf {cfg_nerf['datadir']} && mkdir -p {cfg_nerf['datadir']}")
-
-    glcam_in_obs = cam_in_obs@glcam_in_cvcam
-
-    if cfg_nerf['continual']:
-      if cnt_nerf==0:
-        if translation is None:
-          sc_factor,translation,pcd_real_scale, pcd_normalized = compute_scene_bounds(None,glcam_in_obs,K,use_mask=True,base_dir=cfg_nerf['save_dir'],rgbs=np.array(rgbs_all),depths=np.array(depths_all),masks=np.array(masks_all), eps=cfg_nerf['dbscan_eps'], min_samples=cfg_nerf['dbscan_eps_min_samples'])
-          sc_factor *= 0.7      # Ensure whole object within bound
-          cfg_nerf['sc_factor'] = float(sc_factor)
-          cfg_nerf['translation'] = translation
-          tf_normalize = np.eye(4)
-          tf_normalize[:3,3] = translation
-          tf1 = np.eye(4)
-          tf1[:3,:3] *= sc_factor
-          tf_normalize = tf1@tf_normalize
-
-        pcd_all = pcd_real_scale
-
-      else:
-        pcd_all = prev_pcd_real_scale
-        for i in range(len(rgbs)):
-          pts, colors = compute_scene_bounds_worker(None,K,glcam_in_obs[len(glcam_in_obs)-len(rgbs)+i],use_mask=True,rgb=rgbs[i],depth=depths[i],mask=masks[i])
-          pcd_all += toOpen3dCloud(pts, colors)
-        pcd_all = pcd_all.voxel_down_sample(vox_res)
-        _,keep_mask = find_biggest_cluster(np.asarray(pcd_all.points), eps=cfg_nerf['dbscan_eps'], min_samples=cfg_nerf['dbscan_eps_min_samples'])
-        keep_ids = np.arange(len(np.asarray(pcd_all.points)))[keep_mask]
-        pcd_all = pcd_all.select_by_index(keep_ids)
-
-        ########## Clear memory
-        rgbs_all = []
-        depths_all = []
-        normal_maps_all = []
-        masks_all = []
-        occ_masks_all = []
-
-      pcd_normalized = copy.deepcopy(pcd_all)
-      pcd_normalized.transform(tf_normalize)
-      if normal_maps is not None and len(normal_maps)>0:
-        normal_maps = np.array(normal_maps)
-      else:
-        normal_maps = None
-      rgbs,depths,masks,normal_maps,poses = preprocess_data(np.array(rgbs),np.array(depths),np.array(masks),normal_maps=normal_maps,poses=glcam_in_obs,sc_factor=cfg_nerf['sc_factor'],translation=cfg_nerf['translation'])
-
-    else:
-      logging.info(f"compute_scene_bounds, latest nerf frame {frame_id}")
-      sc_factor,translation,pcd_real_scale, pcd_normalized = compute_scene_bounds(None,glcam_in_obs,K,use_mask=True,base_dir=cfg_nerf['save_dir'],rgbs=np.array(rgbs_all),depths=np.array(depths_all),masks=np.array(masks_all), eps=cfg_nerf['dbscan_eps'], min_samples=cfg_nerf['dbscan_eps_min_samples'])
-
-      cfg_nerf['sc_factor'] = float(sc_factor)
-      cfg_nerf['translation'] = translation
-
-      if normal_maps_all is not None and len(normal_maps_all)>0:
-        normal_maps = np.array(normal_maps_all)
-      else:
-        normal_maps = None
-
-      logging.info(f"preprocess_data, latest nerf frame {frame_id}")
-      rgbs,depths,masks,normal_maps,poses = preprocess_data(np.array(rgbs_all),np.array(depths_all),np.array(masks_all),normal_maps=normal_maps,poses=glcam_in_obs,sc_factor=cfg_nerf['sc_factor'],translation=cfg_nerf['translation'])
-
-    # cfg_nerf['sampled_frame_ids'] = np.arange(len(rgbs_all))
-
-
-    if SPDLOG>=2:
-      np.savetxt(f"{cfg_nerf['save_dir']}/trainval_poses.txt",glcam_in_obs.reshape(-1,4))
-      np.savetxt(f"{debug_dir}/{frame_id}/poses_before_nerf.txt",np.array(cam_in_obs).reshape(-1,4))
-
-    if len(occ_masks_all)>0:
-      if cfg_nerf['continual']:
-        occ_masks = np.array(occ_masks)
-      else:
-        occ_masks = np.array(occ_masks_all)
-    else:
-      occ_masks = None
-
-    if cnt_nerf==0:
-      logging.info(f"First nerf run, create Runner, latest nerf frame {frame_id}")
-      nerf = NerfRunner(cfg_nerf,rgbs,depths=depths,masks=masks,normal_maps=normal_maps,occ_masks=occ_masks,poses=poses,K=K,build_octree_pcd=pcd_normalized)
-    else:
-      if cfg_nerf['continual']:
-        logging.info(f"add_new_frames, latest nerf frame {frame_id}")
-        nerf.add_new_frames(rgbs,depths,masks,normal_maps,poses,occ_masks=occ_masks, new_pcd=pcd_normalized, reuse_weights=False)
-      else:
-        nerf = NerfRunner(cfg_nerf,rgbs,depths=depths,masks=masks,normal_maps=normal_maps,occ_masks=occ_masks,poses=poses,K=K,build_octree_pcd=pcd_normalized)
-
-    logging.info(f"Start training, latest nerf frame {frame_id}")
-    nerf.train()
-    logging.info(f"Training done, latest nerf frame {frame_id}")
-
-    optimized_cvcam_in_obs,offset = get_optimized_poses_in_real_world(poses,nerf.models['pose_array'],cfg_nerf['sc_factor'],cfg_nerf['translation'])
-
-    logging.info("Getting mesh")
-    mesh = nerf.extract_mesh(isolevel=0,voxel_size=cfg_nerf['mesh_resolution'])
-    mesh = mesh_to_real_world(mesh, pose_offset=offset, translation=nerf.cfg['translation'], sc_factor=nerf.cfg['sc_factor'])
-
-    with lock:
-      p_dict['optimized_cvcam_in_obs'] = optimized_cvcam_in_obs
-      p_dict['running'] = False
-      # p_dict['nerf_last'] = nerf    #!NOTE not pickable
-      p_dict['mesh'] = mesh
-
-    logging.info(f"nerf done at frame {frame_id}")
-
-    if cfg_nerf['continual']:
-      prev_pcd_real_scale = pcd_all.voxel_down_sample(vox_res)
-
-    ####### Log
-    if SPDLOG>=2:
-      os.system(f"cp -r {cfg_nerf['save_dir']}/image_step_*.png  {out_dir}/")
-      with open(f"{out_dir}/config.yml",'w') as ff:
-        tmp = copy.deepcopy(cfg_nerf)
-        for k in tmp.keys():
-          if isinstance(tmp[k],np.ndarray):
-            tmp[k] = tmp[k].tolist()
-        yaml.dump(tmp,ff)
-      shutil.copy(f"{out_dir}/config.yml",f"{cfg_nerf['save_dir']}/")
-      np.savetxt(f"{debug_dir}/{frame_id}/poses_after_nerf.txt",np.array(optimized_cvcam_in_obs).reshape(-1,4))
-      mesh.export(f"{cfg_nerf['save_dir']}/mesh_real_world.obj")
-      os.system(f"rm -rf {cfg_nerf['save_dir']}/step_*_mesh_real_world.obj {cfg_nerf['save_dir']}/*frame*ray*.ply && mv {cfg_nerf['save_dir']}/*  {out_dir}/")
-
-
-
-
-class BundleSdf:
+class Bundle_:
   def __init__(self, cfg_track_dir=f"{code_dir}/config_ho3d.yml", cfg_nerf_dir=f'{code_dir}/config.yml', start_nerf_keyframes=10, translation=None, sc_factor=None, use_gui=False):
     with open(cfg_track_dir,'r') as ff:
       self.cfg_track = yaml.load(ff)
@@ -284,16 +45,8 @@ class BundleSdf:
 
     self.manager = multiprocessing.Manager()
 
-    if self.use_gui:
-      self.gui_lock = multiprocessing.Lock()
-      self.gui_dict = self.manager.dict()
-      self.gui_dict['join'] = False
-      self.gui_dict['started'] = False
-      self.gui_worker = multiprocessing.Process(target=run_gui, args=(self.gui_dict, self.gui_lock))
-      self.gui_worker.start()
-    else:
-      self.gui_lock = None
-      self.gui_dict = None
+    self.gui_lock = None
+    self.gui_dict = None
 
     self.p_dict = self.manager.dict()
     self.kf_to_nerf_list = self.manager.list()
@@ -303,15 +56,6 @@ class BundleSdf:
     self.p_dict['nerf_num_frames'] = 0
 
     self.p_dict['SPDLOG'] = self.SPDLOG
-    self.p_nerf = multiprocessing.Process(target=run_nerf, args=(self.p_dict, self.kf_to_nerf_list, self.lock, self.cfg_nerf, self.translation, self.sc_factor, start_nerf_keyframes, self.use_gui, self.gui_lock, self.gui_dict, self.debug_dir))
-    self.p_nerf.start()
-
-    # self.p_dict = {}
-    # self.lock = threading.Lock()
-    # self.p_dict['running'] = False
-    # self.p_dict['join'] = False
-    # self.p_nerf = threading.Thread(target=self.run_nerf, args=(self.p_dict, self.lock))
-    # self.p_nerf.start()
 
     yml = my_cpp.YamlLoadFile(cfg_track_dir)
     self.bundler = my_cpp.Bundler(yml)
@@ -340,29 +84,7 @@ class BundleSdf:
 
   def make_frame(self, color, depth, K, id_str, mask=None, occ_mask=None, pose_in_model=np.eye(4)):
     H,W = color.shape[:2]
-    roi = np.array([0, W-1, 0, H-1], dtype=np.float32).reshape(4, 1)
-
-    assert isinstance(color, np.ndarray) and color.dtype == np.uint8 and color.shape[2] == 3, \
-        f"color: Expected numpy.ndarray[numpy.uint8] with shape (*, *, 3), but got dtype={color.dtype}, shape={color.shape}"
-
-    assert isinstance(depth, np.ndarray), \
-        f"depth: Expected numpy.ndarray[numpy.float32] with shape (*, *), but got dtype={depth.dtype}, shape={depth.shape}"
-
-    assert isinstance(roi, np.ndarray) and roi.dtype == np.float32 and roi.shape == (4, 1), \
-        f"roi: Expected numpy.ndarray[numpy.float32[4, 1]], but got dtype={roi.dtype}, shape={roi.shape}"
-
-    assert isinstance(pose_in_model, np.ndarray) and pose_in_model.shape == (4, 4), \
-        f"pose_in_model: Expected numpy.ndarray[numpy.float32[4, 4]], but got dtype={pose_in_model.dtype}, shape={pose_in_model.shape}"
-
-    assert isinstance(self.cnt, int), \
-        f"cnt: Expected int, but got type={type(self.cnt)}"
-
-    assert isinstance(id_str, str), \
-        f"id_str: Expected str, but got type={type(id_str)}"
-
-    assert isinstance(K, np.ndarray) and K.shape == (3, 3), \
-        f"K: Expected numpy.ndarray[numpy.float32[3, 3]], but got dtype={K.dtype}, shape={K.shape}"
-
+    roi = [0,W-1,0,H-1]
     frame = my_cpp.Frame(color,depth,roi,pose_in_model,self.cnt,id_str,K,self.bundler.yml)
     if mask is not None:
       frame._fg_mask = my_cpp.cvMat(mask)
@@ -436,8 +158,8 @@ class BundleSdf:
       self.bundler.forgetFrame(frame)
       return
 
-    #if self.cfg_track["depth_processing"]["denoise_cloud"]:
-    #  frame.pointCloudDenoise()
+    if self.cfg_track["depth_processing"]["denoise_cloud"]:
+      frame.pointCloudDenoise()
 
     n_valid = frame.countValidPoints()
     n_valid_first = self.bundler._firstframe.countValidPoints()
@@ -544,7 +266,7 @@ class BundleSdf:
     os.makedirs(f"{self.debug_dir}/{frame._id_str}", exist_ok=True)
 
     logging.info(f"processNewFrame start {frame._id_str}")
-    
+
     ### 3.2 Memory Pool
     self.process_new_frame(frame)
     logging.info(f"processNewFrame done {frame._id_str}")
@@ -587,13 +309,40 @@ class BundleSdf:
           continue
         break
 
+    rematch_after_nerf = self.cfg_track["feature_corres"]["rematch_after_nerf"]
+    logging.info(f"rematch_after_nerf: {rematch_after_nerf}")
+    frames_large_update = []
     with self.lock:
       if 'optimized_cvcam_in_obs' in self.p_dict:
         for i_f in range(len(self.p_dict['optimized_cvcam_in_obs'])):
+          if rematch_after_nerf:
+            trans_update = np.linalg.norm(self.p_dict['optimized_cvcam_in_obs'][i_f][:3,3]-self.bundler._keyframes[i_f]._pose_in_model[:3,3])
+            rot_update = geodesic_distance(self.p_dict['optimized_cvcam_in_obs'][i_f][:3,:3], self.bundler._keyframes[i_f]._pose_in_model[:3,:3])
+            if trans_update>=0.005 or rot_update>=5/180.0*np.pi:
+              frames_large_update.append(self.bundler._keyframes[i_f])
+            logging.info(f"{self.bundler._keyframes[i_f]._id_str}, trans_update={trans_update}, rot_update={rot_update}")
           self.bundler._keyframes[i_f]._pose_in_model = self.p_dict['optimized_cvcam_in_obs'][i_f]
           self.bundler._keyframes[i_f]._nerfed = True
         logging.info(f"synced pose from nerf, latest nerf frame {self.bundler._keyframes[len(self.p_dict['optimized_cvcam_in_obs'])-1]._id_str}")
         del self.p_dict['optimized_cvcam_in_obs']
+
+      if self.use_gui:
+        with self.gui_lock:
+          if 'mesh' in self.p_dict:
+            self.gui_dict['mesh'] = self.p_dict['mesh']
+            del self.p_dict['mesh']
+
+    if rematch_after_nerf:
+      if len(frames_large_update)>0:
+        with self.lock:
+          nerf_num_frames = self.p_dict['nerf_num_frames']
+        logging.info(f"before matches keys: {len(self.bundler._fm._matches)}")
+        ks = list(self.bundler._fm._matches.keys())
+        for k in ks:
+          if k[0] in frames_large_update or k[1] in frames_large_update:
+            del self.bundler._fm._matches[k]
+            logging.info(f"Delete match between {k[0]._id_str} and {k[1]._id_str}")
+        logging.info(f"after matches keys: {len(self.bundler._fm._matches)}")
 
     self.bundler.saveNewframeResult()
     if self.SPDLOG>=2 and occ_mask is not None:

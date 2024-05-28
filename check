@@ -1,0 +1,122 @@
+astra::initialize();
+astra::StreamSet stream_set;
+astra::StreamReader reader = stream_set.create_reader();
+
+astra::DepthStream depth_stream = reader.stream< astra::DepthStream >();
+astra::ColorStream color_stream = reader.stream< astra::ColorStream >();
+
+depth_stream.start();
+color_stream.start();
+
+char serialnumber[ 256 ] = { 0 };
+depth_stream.serial_number( serialnumber, 256 );
+
+std::cout << "depth_stream -- hFov: "
+<< reader.stream< astra::DepthStream >().hFov()
+<< " vFov: "
+<< reader.stream< astra::DepthStream >().vFov()
+<< " serial number: "
+<< serialnumber
+<< std::endl;
+
+const unsigned int CHIP_IDENTITY = depth_stream.chip_id();
+
+switch ( CHIP_IDENTITY )
+{
+  case ASTRA_CHIP_ID_MX400:
+  std::cout << "chip id: MX400" << std::endl;
+  break;
+  case ASTRA_CHIP_ID_MX6000:
+  std::cout << "chip id: MX6000" << std::endl;
+  break;
+
+  case ASTRA_CHIP_ID_UNKNOWN:
+  default:
+  throw std::runtime_error( "chip id: unknown. Check that the camera is plugged" );
+  break;
+}
+
+const astra_usb_info_t USB_INFORMATION = depth_stream.usb_info();
+
+std::cout << "usbInfo ---pid:" << USB_INFORMATION.pid << " vid: " << USB_INFORMATION.vid << std::endl;
+
+const astra_conversion_cache_t INTRINSEC_PARAMETERS = depth_stream.depth_to_world_data();
+
+std::cout << "INTRINSEC_PARAMETERS.coeffX: " << std::to_string( INTRINSEC_PARAMETERS.coeffX ) << "\n"
+<< "INTRINSEC_PARAMETERS.coeffY: " << std::to_string( INTRINSEC_PARAMETERS.coeffY ) << "\n"
+<< "INTRINSEC_PARAMETERS.halfResX: " << std::to_string( INTRINSEC_PARAMETERS.halfResX ) << "\n"
+<< "INTRINSEC_PARAMETERS.halfResY: " << std::to_string( INTRINSEC_PARAMETERS.halfResY ) << "\n"
+<< "INTRINSEC_PARAMETERS.resolutionX: " << std::to_string( INTRINSEC_PARAMETERS.resolutionX ) << "\n"
+<< "INTRINSEC_PARAMETERS.resolutionY: " << std::to_string( INTRINSEC_PARAMETERS.resolutionY ) << "\n"
+<< "INTRINSEC_PARAMETERS.xzFactor: " << std::to_string( INTRINSEC_PARAMETERS.xzFactor ) << "\n"
+<< "INTRINSEC_PARAMETERS.yzFactor: " << std::to_string( INTRINSEC_PARAMETERS.yzFactor )
+<< std::endl;
+std::cout << "***" << std::endl;
+
+pcl::visualization::CloudViewer viewer( "RGBD camera" );
+
+for ( ;; )
+{
+  const astra::DepthFrame DEPTH_FRAME = reader.get_latest_frame().get < astra::DepthFrame > ();
+  const astra::ColorFrame COLOR_FRAME = reader.get_latest_frame().get < astra::ColorFrame > ();
+
+  if ( DEPTH_FRAME.is_valid() && COLOR_FRAME.is_valid() )
+  {
+    const unsigned int WIDTH = DEPTH_FRAME.width();
+    const unsigned int HEIGHT = DEPTH_FRAME.height();
+    const unsigned int FRAME_INDEX = DEPTH_FRAME.frame_index();
+    const unsigned int IMAGE_BUFFER_SIZE = DEPTH_FRAME.length();
+
+    if ( FRAME_INDEX == 0 )
+    {
+      std::cout << "WIDTH: " << std::to_string( WIDTH ) << "\n"
+      << "HEIGHT: " << std::to_string( HEIGHT ) << "\n"
+      << "WIDTH * HEIGHT: " << std::to_string( WIDTH * HEIGHT ) << "\n"
+      << "IMAGE_BUFFER_SIZE: " << std::to_string( IMAGE_BUFFER_SIZE )
+      << std::endl;
+
+      std::cout << "DEPTH_FRAME.byte_length(): " << std::to_string( DEPTH_FRAME.byte_length() ) << "\n";
+      std::cout << "DEPTH_FRAME.bytes_per_pixel(): " << std::to_string( DEPTH_FRAME.bytes_per_pixel() )<< "\n";
+      std::cout << "DEPTH_FRAME.stream_type(): " << std::to_string( DEPTH_FRAME.stream_type() ) << std::endl;
+      std::cout << "***" << std::endl;
+    }
+
+    pcl::PointCloud< pcl::PointXYZRGB > captured_point_cloud;
+
+    captured_point_cloud.width = IMAGE_BUFFER_SIZE;
+    captured_point_cloud.height = 3;
+    captured_point_cloud.is_dense = true;
+    captured_point_cloud.points.resize( captured_point_cloud.width * captured_point_cloud.height );
+
+    const float REVERSE_FOCAL_LENGHT = 1.0f / INTRINSEC_PARAMETERS.coeffX;
+    const int OPTICAL_CENTER_X = INTRINSEC_PARAMETERS.halfResX;
+    const int OPTICAL_CENTER_Y = INTRINSEC_PARAMETERS.halfResY;
+    int depth_index = 0;
+
+    for ( int v = - OPTICAL_CENTER_Y; v < OPTICAL_CENTER_Y; ++v )
+    {
+
+      for ( int u = - OPTICAL_CENTER_X; u < OPTICAL_CENTER_X; ++u, ++depth_index )
+      {
+        pcl::PointXYZRGB& pt = captured_point_cloud.points[ depth_index ];
+        pt.z = DEPTH_FRAME.data()[ depth_index ] *  0.001f;
+        pt.x = static_cast< float >( u ) * pt.z * REVERSE_FOCAL_LENGHT;
+        pt.y = static_cast< float >( v ) * pt.z * REVERSE_FOCAL_LENGHT;
+      }
+    }
+
+    for ( unsigned int j = 0; j < HEIGHT; j++ )
+    {
+    
+      for ( unsigned int k = 0; k < WIDTH; k++ )
+      {
+        const astra::RgbPixel RGB_PIXEL = COLOR_FRAME.data()[ j * k ];
+        captured_point_cloud[ j * k ].r = RGB_PIXEL.r;
+        captured_point_cloud[ j * k ].b = RGB_PIXEL.b;
+        captured_point_cloud[ j * k ].g = RGB_PIXEL.g;
+      }
+    }
+
+    viewer.showCloud( captured_point_cloud.makeShared() );
+  }
+}

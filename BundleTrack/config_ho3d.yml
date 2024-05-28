@@ -24,7 +24,7 @@ depth_processing:
     sigma_R: 100000
   outlier_removal:
     num: 30
-    std_mul: 3
+    std_mul: 3i
   edge_normal_thres: 10  #deg between normal and ray
   denoise_cloud: False
   percentile: 100

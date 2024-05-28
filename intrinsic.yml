@@ -1,0 +1,15 @@
+Color_Intrinsic:
+  fx: 1122.24
+  fy: 1122.09
+  cx: 937.062
+  cy: 520.325
+  width: 1920
+  height: 1080
+
+Depth_Intrinsic:
+  fx: 374.079
+  fy: 374.032
+  cx: 312.354
+  cy: 173.442
+  width: 640
+  height: 360

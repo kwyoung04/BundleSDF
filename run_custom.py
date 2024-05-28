@@ -65,6 +65,7 @@ def run_one_video(video_dir='/home/bowen/debug/2022-11-18-15-10-24_milk', out_fo
   if use_segmenter:
     segmenter = Segmenter()
 
+  ### 3. Approach
   tracker = BundleSdf(cfg_track_dir=cfg_track_dir, cfg_nerf_dir=cfg_nerf_dir, start_nerf_keyframes=5, use_gui=use_gui)
 
   reader = YcbineoatReader(video_dir=video_dir, shorter_side=480)
@@ -211,14 +212,15 @@ def draw_pose():
 if __name__=="__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument('--mode', type=str, default="run_video", help="run_video/global_refine/draw_pose")
-  parser.add_argument('--video_dir', type=str, default="/home/bowen/debug/2022-11-18-15-10-24_milk/")
-  parser.add_argument('--out_folder', type=str, default="/home/bowen/debug/bundlesdf_2022-11-18-15-10-24_milk")
-  parser.add_argument('--use_segmenter', type=int, default=0)
-  parser.add_argument('--use_gui', type=int, default=1)
+  parser.add_argument('--video_dir', type=str, default="/home/eric/github/data/slam/object/milk/data")
+  parser.add_argument('--out_folder', type=str, default="/home/eric/github/data/slam/object/milk/result")
+  parser.add_argument('--use_segmenter', type=int, default=1)
+  parser.add_argument('--use_gui', type=int, default=0)
   parser.add_argument('--stride', type=int, default=1, help='interval of frames to run; 1 means using every frame')
   parser.add_argument('--debug_level', type=int, default=2, help='higher means more logging')
   args = parser.parse_args()
 
+  ## run_video: 동작
   if args.mode=='run_video':
     run_one_video(video_dir=args.video_dir, out_folder=args.out_folder, use_segmenter=args.use_segmenter, use_gui=args.use_gui)
   elif args.mode=='global_refine':

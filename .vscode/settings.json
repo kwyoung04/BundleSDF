@@ -132,6 +132,8 @@
     "ios": "cpp",
     "__mutex_base": "cpp",
     "__node_handle": "cpp",
-    "locale": "cpp"
+    "locale": "cpp",
+    "plyconfig.json": "jsonc",
+    "check": "c"
   }
 }
