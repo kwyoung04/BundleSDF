@@ -362,8 +362,17 @@ class BundleSdf:
 
     assert isinstance(K, np.ndarray) and K.shape == (3, 3), \
         f"K: Expected numpy.ndarray[numpy.float32[3, 3]], but got dtype={K.dtype}, shape={K.shape}"
+    
+#    # depth = np.random.rand(800, 1120).astype(np.float32) + 1
+    
+    print("Python depth array:")
+    print("Min:", depth.min(), "Max:", depth.max(), "Mean:", depth.mean())
 
     frame = my_cpp.Frame(color,depth,roi,pose_in_model,self.cnt,id_str,K,self.bundler.yml)
+    depth_from_cpp = np.array(frame._depth).squeeze()
+    print("C++ depth array:")
+    print("Min:", depth_from_cpp.min(), "Max:", depth_from_cpp.max(), "Mean:", depth_from_cpp.mean())
+
     if mask is not None:
       frame._fg_mask = my_cpp.cvMat(mask)
     if occ_mask is not None:
@@ -463,6 +472,7 @@ class BundleSdf:
       return
 
     matches = self.bundler._fm._matches[(frame, ref_frame)]
+    #print("### matches: ", matches)
     if len(matches)<min_match_with_ref:
       visibles = []
       for kf in self.bundler._keyframes:
@@ -471,7 +481,7 @@ class BundleSdf:
       visibles = np.array(visibles)
       ids = np.argsort(visibles)[::-1]
       found = False
-      pdb.set_trace()
+      #pdb.set_trace()
       for id in ids:
         kf = self.bundler._keyframes[id]
         logging.info(f"trying new ref frame {kf._id_str}")
@@ -522,9 +532,9 @@ class BundleSdf:
     find_matches = False
     self.bundler.optimizeGPU(local_frames, find_matches)
 
-    if frame._status==my_cpp.Frame.FAIL:
-      self.bundler.forgetFrame(frame)
-      return
+    # if frame._status==my_cpp.Frame.FAIL:
+    #   self.bundler.forgetFrame(frame)
+    #   return
 
     self.bundler.checkAndAddKeyframe(frame)
 
@@ -545,6 +555,9 @@ class BundleSdf:
 
     logging.info(f"processNewFrame start {frame._id_str}")
     
+    if frame._id == 5:
+      print(frame._id)
+
     ### 3.2 Memory Pool
     self.process_new_frame(frame)
     logging.info(f"processNewFrame done {frame._id_str}")

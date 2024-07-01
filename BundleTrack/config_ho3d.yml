@@ -13,7 +13,7 @@ segmentation:
   tolerance: 0.03
 
 depth_processing:
-  zfar: 1.0
+  zfar: 3.5
   erode:
     radius: 1
     diff: 0.001
@@ -24,7 +24,7 @@ depth_processing:
     sigma_R: 100000
   outlier_removal:
     num: 30
-    std_mul: 3i
+    std_mul: 3
   edge_normal_thres: 10  #deg between normal and ray
   denoise_cloud: False
   percentile: 100
@@ -34,7 +34,7 @@ visible_angle: 70   # Angle between normal and point to camera origin within XXX
 bundle:
   num_iter_outter: 7
   num_iter_inner: 5
-  window_size: 5  #exclude keyframes, include new frame
+  window_size: 1  #exclude keyframes, include new frame
   max_BA_frames: 10
   subset_selection_method: normal_orientation_nearest
   depth_association_radius: 5  # 0: findDenseCorr; 1: findDenseCorrNearestNeighbor3D
